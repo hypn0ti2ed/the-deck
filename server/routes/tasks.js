@@ -7,6 +7,41 @@ const router = express.Router();
 // All routes require authentication
 router.use(authenticateToken);
 
+// Helper: Create or update event for a task with a due date
+function syncTaskEvent(task, userId) {
+  if (!task.due_date) {
+    // No due date - delete associated event if exists
+    if (task.event_id) {
+      db.prepare('DELETE FROM events WHERE id = ?').run(task.event_id);
+      db.prepare('UPDATE tasks SET event_id = NULL WHERE id = ?').run(task.id);
+    }
+    return null;
+  }
+
+  const eventTitle = `Task Due: ${task.title}`;
+  const eventDescription = task.description || `Task "${task.title}" is due`;
+
+  if (task.event_id) {
+    // Update existing event
+    db.prepare(`
+      UPDATE events
+      SET title = ?, description = ?, start_time = ?, project_id = ?, all_day = 1
+      WHERE id = ?
+    `).run(eventTitle, eventDescription, task.due_date, task.project_id, task.event_id);
+    return task.event_id;
+  } else {
+    // Create new event
+    const result = db.prepare(`
+      INSERT INTO events (user_id, project_id, title, description, start_time, all_day)
+      VALUES (?, ?, ?, ?, ?, 1)
+    `).run(userId, task.project_id, eventTitle, eventDescription, task.due_date);
+
+    const eventId = result.lastInsertRowid;
+    db.prepare('UPDATE tasks SET event_id = ? WHERE id = ?').run(eventId, task.id);
+    return eventId;
+  }
+}
+
 // Get all tasks for user
 router.get('/', (req, res) => {
   try {
@@ -101,7 +136,14 @@ router.post('/', (req, res) => {
       due_date || null
     );
 
-    const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(result.lastInsertRowid);
+    let task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(result.lastInsertRowid);
+
+    // Create associated calendar event if due date is set
+    if (due_date) {
+      syncTaskEvent(task, req.user.id);
+      task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(task.id);
+    }
+
     res.status(201).json({ task });
   } catch (error) {
     console.error('Create task error:', error);
@@ -133,22 +175,32 @@ router.put('/:id', (req, res) => {
       }
     }
 
+    const newTitle = title || existing.title;
+    const newDescription = description !== undefined ? description : existing.description;
+    const newProjectId = project_id !== undefined ? project_id : existing.project_id;
+    const newDueDate = due_date !== undefined ? due_date : existing.due_date;
+
     db.prepare(`
       UPDATE tasks
       SET title = ?, description = ?, project_id = ?, priority = ?, status = ?, due_date = ?
       WHERE id = ? AND user_id = ?
     `).run(
-      title || existing.title,
-      description !== undefined ? description : existing.description,
-      project_id !== undefined ? project_id : existing.project_id,
+      newTitle,
+      newDescription,
+      newProjectId,
       priority || existing.priority,
       status || existing.status,
-      due_date !== undefined ? due_date : existing.due_date,
+      newDueDate,
       req.params.id,
       req.user.id
     );
 
-    const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id);
+    let task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id);
+
+    // Sync associated calendar event
+    syncTaskEvent(task, req.user.id);
+    task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id);
+
     res.json({ task });
   } catch (error) {
     console.error('Update task error:', error);
@@ -165,6 +217,11 @@ router.delete('/:id', (req, res) => {
 
     if (!existing) {
       return res.status(404).json({ error: 'Task not found' });
+    }
+
+    // Delete associated event if exists
+    if (existing.event_id) {
+      db.prepare('DELETE FROM events WHERE id = ?').run(existing.event_id);
     }
 
     db.prepare('DELETE FROM tasks WHERE id = ? AND user_id = ?').run(

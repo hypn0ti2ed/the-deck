@@ -45,6 +45,7 @@ function initializeDatabase() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
       project_id INTEGER,
+      event_id INTEGER,
       title TEXT NOT NULL,
       description TEXT,
       priority TEXT CHECK(priority IN ('low', 'medium', 'high')) DEFAULT 'medium',
@@ -52,7 +53,8 @@ function initializeDatabase() {
       due_date DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL,
+      FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE SET NULL
     );
 
     -- Events table
@@ -94,6 +96,14 @@ function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_events_start_time ON events(start_time);
     CREATE INDEX IF NOT EXISTS idx_ideas_user ON ideas(user_id);
   `);
+
+  // Migration: Add event_id column to tasks if it doesn't exist
+  const taskColumns = db.prepare("PRAGMA table_info(tasks)").all();
+  const hasEventId = taskColumns.some(col => col.name === 'event_id');
+  if (!hasEventId) {
+    db.exec('ALTER TABLE tasks ADD COLUMN event_id INTEGER REFERENCES events(id) ON DELETE SET NULL');
+    console.log('Migration: Added event_id column to tasks table');
+  }
 
   console.log('Database initialized successfully');
 }
