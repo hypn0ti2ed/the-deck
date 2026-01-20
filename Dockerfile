@@ -7,7 +7,7 @@ WORKDIR /app/client
 COPY client/package*.json ./
 
 # Install dependencies
-RUN npm ci
+RUN npm install
 
 # Copy client source
 COPY client/ ./
@@ -27,7 +27,7 @@ RUN apk add --no-cache python3 make g++
 COPY package*.json ./
 
 # Install production dependencies
-RUN npm ci --only=production
+RUN npm install --only=production
 
 # Remove build dependencies
 RUN apk del python3 make g++
