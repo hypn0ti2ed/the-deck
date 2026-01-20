@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+client/node_modules/
+
+# Git
+.git/
+.gitignore
+
+# Data
+data/
+*.db
+
+# Environment (use docker-compose env instead)
+.env
+.env.local
+.env.*.local
+
+# Build artifacts
+client/dist/
+
+# Documentation
+*.md
+
+# IDE
+.idea/
+.vscode/
+
+# Logs
+*.log

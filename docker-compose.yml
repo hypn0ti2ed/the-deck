@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  the-deck:
+    build: .
+    container_name: the-deck
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - deck-data:/app/data
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - JWT_SECRET=${JWT_SECRET:-change-this-to-a-secure-random-string}
+      - DATABASE_PATH=/app/data/deck.db
+      - UPLOAD_PATH=/app/data/uploads
+      - MAX_FILE_SIZE=10485760
+
+volumes:
+  deck-data:
+    driver: local
