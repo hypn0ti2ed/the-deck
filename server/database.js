@@ -67,9 +67,30 @@ function initializeDatabase() {
       start_time DATETIME NOT NULL,
       end_time DATETIME,
       all_day BOOLEAN DEFAULT 0,
+      source TEXT DEFAULT 'local',
+      external_id TEXT,
+      calendar_account_id INTEGER,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL,
+      FOREIGN KEY (calendar_account_id) REFERENCES calendar_accounts(id) ON DELETE CASCADE
+    );
+
+    -- Calendar accounts table (for Google/Outlook sync)
+    CREATE TABLE IF NOT EXISTS calendar_accounts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      provider TEXT NOT NULL CHECK(provider IN ('google', 'outlook')),
+      email TEXT NOT NULL,
+      access_token TEXT NOT NULL,
+      refresh_token TEXT,
+      token_expires_at DATETIME,
+      calendar_id TEXT,
+      enabled BOOLEAN DEFAULT 1,
+      last_synced_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      UNIQUE(user_id, provider, email)
     );
 
     -- Ideas table
@@ -95,7 +116,19 @@ function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_events_project ON events(project_id);
     CREATE INDEX IF NOT EXISTS idx_events_start_time ON events(start_time);
     CREATE INDEX IF NOT EXISTS idx_ideas_user ON ideas(user_id);
+    CREATE INDEX IF NOT EXISTS idx_calendar_accounts_user ON calendar_accounts(user_id);
+    CREATE INDEX IF NOT EXISTS idx_events_external ON events(external_id, calendar_account_id);
   `);
+
+  // Migration: Add new columns to events if they don't exist
+  const eventColumns = db.prepare("PRAGMA table_info(events)").all();
+  const hasSource = eventColumns.some(col => col.name === 'source');
+  if (!hasSource) {
+    db.exec("ALTER TABLE events ADD COLUMN source TEXT DEFAULT 'local'");
+    db.exec("ALTER TABLE events ADD COLUMN external_id TEXT");
+    db.exec("ALTER TABLE events ADD COLUMN calendar_account_id INTEGER REFERENCES calendar_accounts(id) ON DELETE CASCADE");
+    console.log('Migration: Added sync columns to events table');
+  }
 
   // Migration: Add event_id column to tasks if it doesn't exist
   const taskColumns = db.prepare("PRAGMA table_info(tasks)").all();

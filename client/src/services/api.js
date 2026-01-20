@@ -102,4 +102,16 @@ export const searchAPI = {
   search: (query) => api.get('/search', { params: { q: query } }),
 };
 
+// Calendar Sync API
+export const calendarsAPI = {
+  getAccounts: () => api.get('/calendars/accounts'),
+  deleteAccount: (id) => api.delete(`/calendars/accounts/${id}`),
+  toggleAccount: (id) => api.patch(`/calendars/accounts/${id}/toggle`),
+  getGoogleAuthUrl: () => api.get('/calendars/google/auth-url'),
+  syncGoogle: (accountId) => api.post(`/calendars/google/sync/${accountId}`),
+  getOutlookAuthUrl: () => api.get('/calendars/outlook/auth-url'),
+  syncOutlook: (accountId) => api.post(`/calendars/outlook/sync/${accountId}`),
+  syncAll: () => api.post('/calendars/sync-all'),
+};
+
 export default api;

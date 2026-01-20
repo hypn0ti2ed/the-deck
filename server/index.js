@@ -26,6 +26,7 @@ app.use('/api/tasks', require('./routes/tasks'));
 app.use('/api/events', require('./routes/events'));
 app.use('/api/ideas', require('./routes/ideas'));
 app.use('/api/search', require('./routes/search'));
+app.use('/api/calendars', require('./routes/calendars'));
 
 // Serve static files in production
 if (process.env.NODE_ENV === 'production') {
