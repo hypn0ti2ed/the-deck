@@ -10,23 +10,132 @@ const router = express.Router();
 // All routes require authentication
 router.use(authenticateToken);
 
-// Google OAuth config
-const googleOAuth2Client = new google.auth.OAuth2(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET,
-  process.env.GOOGLE_REDIRECT_URI || `${process.env.APP_URL || 'http://localhost:3000'}/api/calendars/google/callback`
-);
+// Helper to get user's OAuth config for a provider
+function getUserOAuthConfig(userId, provider) {
+  return db.prepare(
+    'SELECT * FROM user_oauth_configs WHERE user_id = ? AND provider = ?'
+  ).get(userId, provider);
+}
 
-// Microsoft OAuth config
-const msalConfig = {
-  auth: {
-    clientId: process.env.MICROSOFT_CLIENT_ID,
-    clientSecret: process.env.MICROSOFT_CLIENT_SECRET,
-    authority: 'https://login.microsoftonline.com/common',
-  },
-};
+// Helper to create Google OAuth client for a user
+function createGoogleOAuth2Client(userId) {
+  const config = getUserOAuthConfig(userId, 'google');
+  if (!config) return null;
 
-const msalClient = process.env.MICROSOFT_CLIENT_ID ? new msal.ConfidentialClientApplication(msalConfig) : null;
+  const appUrl = process.env.APP_URL || 'http://localhost:3000';
+  return new google.auth.OAuth2(
+    config.client_id,
+    config.client_secret,
+    `${appUrl}/api/calendars/google/callback`
+  );
+}
+
+// Helper to create Microsoft MSAL client for a user
+function createMsalClient(userId) {
+  const config = getUserOAuthConfig(userId, 'outlook');
+  if (!config) return null;
+
+  return new msal.ConfidentialClientApplication({
+    auth: {
+      clientId: config.client_id,
+      clientSecret: config.client_secret,
+      authority: 'https://login.microsoftonline.com/common',
+    },
+  });
+}
+
+// ==================== OAUTH CONFIG MANAGEMENT ====================
+
+// Get user's OAuth configurations
+router.get('/oauth-configs', (req, res) => {
+  try {
+    const configs = db.prepare(`
+      SELECT id, provider, client_id, created_at, updated_at
+      FROM user_oauth_configs
+      WHERE user_id = ?
+    `).all(req.user.id);
+
+    // Mask client_id for display (show last 8 chars)
+    const maskedConfigs = configs.map(config => ({
+      ...config,
+      client_id: config.client_id ? '...' + config.client_id.slice(-8) : null,
+      is_configured: true,
+    }));
+
+    res.json({ configs: maskedConfigs });
+  } catch (error) {
+    console.error('Get OAuth configs error:', error);
+    res.status(500).json({ error: 'Failed to fetch OAuth configurations' });
+  }
+});
+
+// Save/update OAuth configuration for a provider
+router.post('/oauth-configs/:provider', (req, res) => {
+  try {
+    const { provider } = req.params;
+    const { client_id, client_secret } = req.body;
+
+    if (!['google', 'outlook'].includes(provider)) {
+      return res.status(400).json({ error: 'Invalid provider' });
+    }
+
+    if (!client_id || !client_secret) {
+      return res.status(400).json({ error: 'Client ID and Client Secret are required' });
+    }
+
+    const existing = getUserOAuthConfig(req.user.id, provider);
+
+    if (existing) {
+      db.prepare(`
+        UPDATE user_oauth_configs
+        SET client_id = ?, client_secret = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(client_id, client_secret, existing.id);
+    } else {
+      db.prepare(`
+        INSERT INTO user_oauth_configs (user_id, provider, client_id, client_secret)
+        VALUES (?, ?, ?, ?)
+      `).run(req.user.id, provider, client_id, client_secret);
+    }
+
+    res.json({ message: `${provider} OAuth configuration saved` });
+  } catch (error) {
+    console.error('Save OAuth config error:', error);
+    res.status(500).json({ error: 'Failed to save OAuth configuration' });
+  }
+});
+
+// Delete OAuth configuration for a provider
+router.delete('/oauth-configs/:provider', (req, res) => {
+  try {
+    const { provider } = req.params;
+
+    if (!['google', 'outlook'].includes(provider)) {
+      return res.status(400).json({ error: 'Invalid provider' });
+    }
+
+    // Also delete all connected accounts for this provider
+    db.prepare('DELETE FROM calendar_accounts WHERE user_id = ? AND provider = ?')
+      .run(req.user.id, provider);
+
+    // Delete the OAuth config
+    db.prepare('DELETE FROM user_oauth_configs WHERE user_id = ? AND provider = ?')
+      .run(req.user.id, provider);
+
+    // Delete synced events from this provider
+    db.prepare(`
+      DELETE FROM events
+      WHERE user_id = ? AND source = ? AND calendar_account_id IS NOT NULL
+    `).run(req.user.id, provider);
+
+    res.json({ message: `${provider} OAuth configuration deleted` });
+  } catch (error) {
+    console.error('Delete OAuth config error:', error);
+    res.status(500).json({ error: 'Failed to delete OAuth configuration' });
+  }
+});
+
+// ==================== CALENDAR ACCOUNTS ====================
 
 // Get all connected calendar accounts
 router.get('/accounts', (req, res) => {
@@ -94,11 +203,16 @@ router.patch('/accounts/:id/toggle', (req, res) => {
 
 // Get Google OAuth URL
 router.get('/google/auth-url', (req, res) => {
-  if (!process.env.GOOGLE_CLIENT_ID) {
-    return res.status(400).json({ error: 'Google Calendar integration not configured' });
+  const oauthClient = createGoogleOAuth2Client(req.user.id);
+
+  if (!oauthClient) {
+    return res.status(400).json({
+      error: 'Google Calendar not configured. Please add your Google OAuth credentials in the settings first.',
+      needs_config: true
+    });
   }
 
-  const authUrl = googleOAuth2Client.generateAuthUrl({
+  const authUrl = oauthClient.generateAuthUrl({
     access_type: 'offline',
     scope: ['https://www.googleapis.com/auth/calendar.readonly', 'https://www.googleapis.com/auth/userinfo.email'],
     prompt: 'consent',
@@ -114,15 +228,20 @@ router.get('/google/callback', async (req, res) => {
     const { code, state } = req.query;
     const userId = parseInt(state);
 
-    const { tokens } = await googleOAuth2Client.getToken(code);
-    googleOAuth2Client.setCredentials(tokens);
+    const oauthClient = createGoogleOAuth2Client(userId);
+    if (!oauthClient) {
+      return res.redirect('/calendar?error=google_not_configured');
+    }
+
+    const { tokens } = await oauthClient.getToken(code);
+    oauthClient.setCredentials(tokens);
 
     // Get user email
-    const oauth2 = google.oauth2({ version: 'v2', auth: googleOAuth2Client });
+    const oauth2 = google.oauth2({ version: 'v2', auth: oauthClient });
     const { data: userInfo } = await oauth2.userinfo.get();
 
     // Get primary calendar
-    const calendar = google.calendar({ version: 'v3', auth: googleOAuth2Client });
+    const calendar = google.calendar({ version: 'v3', auth: oauthClient });
     const { data: calendarList } = await calendar.calendarList.list();
     const primaryCalendar = calendarList.items.find(cal => cal.primary) || calendarList.items[0];
 
@@ -177,14 +296,19 @@ router.post('/google/sync/:accountId', async (req, res) => {
       return res.status(404).json({ error: 'Google Calendar account not found' });
     }
 
+    const oauthClient = createGoogleOAuth2Client(req.user.id);
+    if (!oauthClient) {
+      return res.status(400).json({ error: 'Google OAuth not configured' });
+    }
+
     // Refresh token if needed
-    googleOAuth2Client.setCredentials({
+    oauthClient.setCredentials({
       access_token: account.access_token,
       refresh_token: account.refresh_token,
     });
 
     if (account.token_expires_at && new Date(account.token_expires_at) < new Date()) {
-      const { credentials } = await googleOAuth2Client.refreshAccessToken();
+      const { credentials } = await oauthClient.refreshAccessToken();
       db.prepare(`
         UPDATE calendar_accounts SET access_token = ?, token_expires_at = ? WHERE id = ?
       `).run(
@@ -192,10 +316,10 @@ router.post('/google/sync/:accountId', async (req, res) => {
         credentials.expiry_date ? new Date(credentials.expiry_date).toISOString() : null,
         account.id
       );
-      googleOAuth2Client.setCredentials(credentials);
+      oauthClient.setCredentials(credentials);
     }
 
-    const calendar = google.calendar({ version: 'v3', auth: googleOAuth2Client });
+    const calendar = google.calendar({ version: 'v3', auth: oauthClient });
 
     // Get events from the last 30 days to next 90 days
     const timeMin = new Date();
@@ -263,14 +387,20 @@ router.post('/google/sync/:accountId', async (req, res) => {
 
 // Get Microsoft OAuth URL
 router.get('/outlook/auth-url', (req, res) => {
-  if (!process.env.MICROSOFT_CLIENT_ID) {
-    return res.status(400).json({ error: 'Outlook Calendar integration not configured' });
+  const config = getUserOAuthConfig(req.user.id, 'outlook');
+
+  if (!config) {
+    return res.status(400).json({
+      error: 'Outlook Calendar not configured. Please add your Microsoft OAuth credentials in the settings first.',
+      needs_config: true
+    });
   }
 
-  const redirectUri = process.env.MICROSOFT_REDIRECT_URI || `${process.env.APP_URL || 'http://localhost:3000'}/api/calendars/outlook/callback`;
+  const appUrl = process.env.APP_URL || 'http://localhost:3000';
+  const redirectUri = `${appUrl}/api/calendars/outlook/callback`;
 
   const authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
-    `client_id=${process.env.MICROSOFT_CLIENT_ID}` +
+    `client_id=${config.client_id}` +
     `&response_type=code` +
     `&redirect_uri=${encodeURIComponent(redirectUri)}` +
     `&scope=${encodeURIComponent('offline_access User.Read Calendars.Read')}` +
@@ -286,7 +416,13 @@ router.get('/outlook/callback', async (req, res) => {
     const { code, state } = req.query;
     const userId = parseInt(state);
 
-    const redirectUri = process.env.MICROSOFT_REDIRECT_URI || `${process.env.APP_URL || 'http://localhost:3000'}/api/calendars/outlook/callback`;
+    const msalClient = createMsalClient(userId);
+    if (!msalClient) {
+      return res.redirect('/calendar?error=outlook_not_configured');
+    }
+
+    const appUrl = process.env.APP_URL || 'http://localhost:3000';
+    const redirectUri = `${appUrl}/api/calendars/outlook/callback`;
 
     const tokenResponse = await msalClient.acquireTokenByCode({
       code,
@@ -348,6 +484,11 @@ router.post('/outlook/sync/:accountId', async (req, res) => {
 
     if (!account) {
       return res.status(404).json({ error: 'Outlook Calendar account not found' });
+    }
+
+    const msalClient = createMsalClient(req.user.id);
+    if (!msalClient) {
+      return res.status(400).json({ error: 'Outlook OAuth not configured' });
     }
 
     let accessToken = account.access_token;
@@ -451,15 +592,19 @@ router.post('/sync-all', async (req, res) => {
     const results = [];
     for (const account of accounts) {
       try {
-        // Make internal request to sync endpoint
         if (account.provider === 'google') {
-          // Inline Google sync logic
-          googleOAuth2Client.setCredentials({
+          const oauthClient = createGoogleOAuth2Client(req.user.id);
+          if (!oauthClient) {
+            results.push({ provider: 'google', email: account.email, error: 'OAuth not configured' });
+            continue;
+          }
+
+          oauthClient.setCredentials({
             access_token: account.access_token,
             refresh_token: account.refresh_token,
           });
 
-          const calendar = google.calendar({ version: 'v3', auth: googleOAuth2Client });
+          const calendar = google.calendar({ version: 'v3', auth: oauthClient });
           const timeMin = new Date();
           timeMin.setDate(timeMin.getDate() - 30);
           const timeMax = new Date();
@@ -495,8 +640,53 @@ router.post('/sync-all', async (req, res) => {
           }
           db.prepare('UPDATE calendar_accounts SET last_synced_at = ? WHERE id = ?').run(new Date().toISOString(), account.id);
           results.push({ provider: 'google', email: account.email, synced });
+        } else if (account.provider === 'outlook') {
+          const msalClient = createMsalClient(req.user.id);
+          if (!msalClient) {
+            results.push({ provider: 'outlook', email: account.email, error: 'OAuth not configured' });
+            continue;
+          }
+
+          const graphClient = Client.init({
+            authProvider: (done) => done(null, account.access_token),
+          });
+
+          const timeMin = new Date();
+          timeMin.setDate(timeMin.getDate() - 30);
+          const timeMax = new Date();
+          timeMax.setDate(timeMax.getDate() + 90);
+
+          const response = await graphClient
+            .api('/me/calendar/events')
+            .query({
+              $filter: `start/dateTime ge '${timeMin.toISOString()}' and start/dateTime le '${timeMax.toISOString()}'`,
+              $top: 500,
+            })
+            .get();
+
+          let synced = 0;
+          for (const event of response.value || []) {
+            if (event.isCancelled) continue;
+            const startTime = event.start.dateTime + (event.start.timeZone === 'UTC' ? 'Z' : '');
+            const endTime = event.end.dateTime + (event.end.timeZone === 'UTC' ? 'Z' : '');
+            const allDay = event.isAllDay;
+
+            const existing = db.prepare(
+              'SELECT id FROM events WHERE external_id = ? AND calendar_account_id = ?'
+            ).get(event.id, account.id);
+
+            if (existing) {
+              db.prepare(`UPDATE events SET title = ?, description = ?, start_time = ?, end_time = ?, all_day = ? WHERE id = ?`)
+                .run(event.subject || 'Untitled', event.bodyPreview || null, startTime, endTime, allDay ? 1 : 0, existing.id);
+            } else {
+              db.prepare(`INSERT INTO events (user_id, title, description, start_time, end_time, all_day, source, external_id, calendar_account_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+                .run(req.user.id, event.subject || 'Untitled', event.bodyPreview || null, startTime, endTime, allDay ? 1 : 0, 'outlook', event.id, account.id);
+            }
+            synced++;
+          }
+          db.prepare('UPDATE calendar_accounts SET last_synced_at = ? WHERE id = ?').run(new Date().toISOString(), account.id);
+          results.push({ provider: 'outlook', email: account.email, synced });
         }
-        // Outlook sync would be similar...
       } catch (err) {
         results.push({ provider: account.provider, email: account.email, error: err.message });
       }

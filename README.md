@@ -144,14 +144,19 @@ docker cp ./backup/. the-deck:/app/data
 | `DATABASE_PATH` | Path to SQLite database | `./data/deck.db` |
 | `UPLOAD_PATH` | Path for audio uploads | `./data/uploads` |
 | `MAX_FILE_SIZE` | Max upload size in bytes | `10485760` (10MB) |
-| `GOOGLE_CLIENT_ID` | Google OAuth client ID | (optional) |
-| `GOOGLE_CLIENT_SECRET` | Google OAuth client secret | (optional) |
-| `MICROSOFT_CLIENT_ID` | Microsoft OAuth client ID | (optional) |
-| `MICROSOFT_CLIENT_SECRET` | Microsoft OAuth client secret | (optional) |
 
 ## Calendar Sync Setup
 
 The Deck supports syncing with Google Calendar and Microsoft Outlook. This is optional - the app works without it.
+
+**Important:** Calendar sync is configured on a per-user basis. Each user can set up their own OAuth credentials through the app's Calendar Sync Settings UI. No server-side configuration is required.
+
+### Setting Up Calendar Sync (Per User)
+
+1. Log into The Deck and go to the Calendar page
+2. Click "Sync Settings" button
+3. Go to the "OAuth Setup" tab
+4. Follow the instructions to set up Google and/or Outlook credentials
 
 ### Google Calendar Setup
 
@@ -161,7 +166,7 @@ The Deck supports syncing with Google Calendar and Microsoft Outlook. This is op
 4. Create OAuth 2.0 credentials:
    - Application type: Web application
    - Authorized redirect URI: `https://your-domain.com/api/calendars/google/callback`
-5. Copy the Client ID and Client Secret to your environment variables
+5. Copy the Client ID and Client Secret into The Deck's Calendar Sync Settings
 
 ### Microsoft Outlook Setup
 
@@ -172,9 +177,9 @@ The Deck supports syncing with Google Calendar and Microsoft Outlook. This is op
 5. Under "API permissions", add:
    - Microsoft Graph > Delegated > Calendars.Read
    - Microsoft Graph > Delegated > User.Read
-6. Copy the Application (client) ID and client secret to your environment variables
+6. Copy the Application (client) ID and client secret into The Deck's Calendar Sync Settings
 
-### Docker Compose with Calendar Sync
+### Docker Compose Example
 
 ```yaml
 services:
@@ -187,10 +192,6 @@ services:
     environment:
       - JWT_SECRET=your-secret-here
       - APP_URL=https://your-domain.com
-      - GOOGLE_CLIENT_ID=your-google-client-id
-      - GOOGLE_CLIENT_SECRET=your-google-client-secret
-      - MICROSOFT_CLIENT_ID=your-microsoft-client-id
-      - MICROSOFT_CLIENT_SECRET=your-microsoft-client-secret
 
 volumes:
   deck-data:

@@ -104,13 +104,21 @@ export const searchAPI = {
 
 // Calendar Sync API
 export const calendarsAPI = {
+  // OAuth configs (per-user credentials)
+  getOAuthConfigs: () => api.get('/calendars/oauth-configs'),
+  saveOAuthConfig: (provider, data) => api.post(`/calendars/oauth-configs/${provider}`, data),
+  deleteOAuthConfig: (provider) => api.delete(`/calendars/oauth-configs/${provider}`),
+  // Calendar accounts
   getAccounts: () => api.get('/calendars/accounts'),
   deleteAccount: (id) => api.delete(`/calendars/accounts/${id}`),
   toggleAccount: (id) => api.patch(`/calendars/accounts/${id}/toggle`),
+  // Google
   getGoogleAuthUrl: () => api.get('/calendars/google/auth-url'),
   syncGoogle: (accountId) => api.post(`/calendars/google/sync/${accountId}`),
+  // Outlook
   getOutlookAuthUrl: () => api.get('/calendars/outlook/auth-url'),
   syncOutlook: (accountId) => api.post(`/calendars/outlook/sync/${accountId}`),
+  // Sync all
   syncAll: () => api.post('/calendars/sync-all'),
 };
 

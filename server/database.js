@@ -76,6 +76,19 @@ function initializeDatabase() {
       FOREIGN KEY (calendar_account_id) REFERENCES calendar_accounts(id) ON DELETE CASCADE
     );
 
+    -- User OAuth configurations (per-user OAuth app credentials)
+    CREATE TABLE IF NOT EXISTS user_oauth_configs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      provider TEXT NOT NULL CHECK(provider IN ('google', 'outlook')),
+      client_id TEXT NOT NULL,
+      client_secret TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      UNIQUE(user_id, provider)
+    );
+
     -- Calendar accounts table (for Google/Outlook sync)
     CREATE TABLE IF NOT EXISTS calendar_accounts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,6 +131,7 @@ function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_ideas_user ON ideas(user_id);
     CREATE INDEX IF NOT EXISTS idx_calendar_accounts_user ON calendar_accounts(user_id);
     CREATE INDEX IF NOT EXISTS idx_events_external ON events(external_id, calendar_account_id);
+    CREATE INDEX IF NOT EXISTS idx_user_oauth_configs ON user_oauth_configs(user_id, provider);
   `);
 
   // Migration: Add new columns to events if they don't exist
